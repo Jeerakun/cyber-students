@@ -1,15 +1,14 @@
+import base64
 from datetime import datetime, timedelta
 from time import mktime
-from tornado.escape import json_decode, utf8
 from tornado.gen import coroutine
+from tornado.escape import json_decode
 from uuid import uuid4
-
 from .base import BaseHandler
+from api.encrypt import hash_email, encrypt_password
 
 class LoginHandler(BaseHandler):
-
-    @coroutine
-    def generate_token(self, email):
+    async def generate_token(self, email_hash):
         token_uuid = uuid4().hex
         expires_in = datetime.now() + timedelta(hours=2)
         expires_in = mktime(expires_in.utctimetuple())
@@ -19,54 +18,36 @@ class LoginHandler(BaseHandler):
             'expiresIn': expires_in,
         }
 
-        yield self.db.users.update_one({
-            'email': email
-        }, {
-            '$set': token
-        })
-
+        await self.db.users.update_one({'email_hash': email_hash}, {'$set': token})
         return token
 
-    @coroutine
-    def post(self):
+    async def post(self):
         try:
             body = json_decode(self.request.body)
             email = body['email'].lower().strip()
-            if not isinstance(email, str):
-                raise Exception()
             password = body['password']
-            if not isinstance(password, str):
-                raise Exception()
-        except:
-            self.send_error(400, message='You must provide an email address and password!')
-            return
 
-        if not email:
-            self.send_error(400, message='The email address is invalid!')
-            return
+            email_hash = hash_email(email)
+            user = await self.db.users.find_one({'email_hash': email_hash}, {'password': 1, 'salt': 1})
 
-        if not password:
-            self.send_error(400, message='The password is invalid!')
-            return
+            if not user:
+                self.send_error(403, message='User not found')
+                return
 
-        user = yield self.db.users.find_one({
-          'email': email
-        }, {
-          'password': 1
-        })
+            salt = base64.urlsafe_b64decode(user['salt'].encode())
+            stored_password_hash, _ = encrypt_password(password, salt)
 
-        if user is None:
-            self.send_error(403, message='The email address and password are invalid!')
-            return
+            if stored_password_hash != user['password']:
+                self.send_error(403, message='Incorrect username or password')
+                return
 
-        if user['password'] != password:
-            self.send_error(403, message='The email address and password are invalid!')
-            return
+            token = await self.generate_token(email_hash)
+            response = {
+                'message': 'Login successful',
+                'token': token['token'],
+                'expiresIn': token['expiresIn']
+            }
+            self.write_json(response)
 
-        token = yield self.generate_token(email)
-
-        self.set_status(200)
-        self.response['token'] = token['token']
-        self.response['expiresIn'] = token['expiresIn']
-
-        self.write_json()
+        except Exception as e:
+            self.send_error(400, message=str(e))

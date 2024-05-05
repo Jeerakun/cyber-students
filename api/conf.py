@@ -6,5 +6,6 @@ MONGODB_HOST = {
 }
 
 MONGODB_DBNAME = 'cyberStudents'
+ENC_KEY = 'mysecretkey12345678901234567890123'  # Should be securely retrieved or managed
 
 WORKERS = 32
